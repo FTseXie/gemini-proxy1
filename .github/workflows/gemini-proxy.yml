@@ -1,0 +1,59 @@
+name: Gemini API Proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Message to send to Gemini'
+        required: true
+        default: 'Hello'
+      model:
+        description: 'Gemini model name'
+        required: true
+        default: 'gemini-2.0-flash'
+      request_id:
+        description: 'Unique request ID'
+        required: true
+
+jobs:
+  call-gemini:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Call Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          MESSAGE="${{ github.event.inputs.message }}"
+          MODEL="${{ github.event.inputs.model }}"
+          REQUEST_ID="${{ github.event.inputs.request_id }}"
+
+          echo "Calling Gemini API..."
+          echo "Model: $MODEL"
+
+          # Save message to temp file to handle special characters
+          cat > /tmp/payload.json << 'PAYLOAD_EOF'
+          {"contents":[{"parts":[{"text":"MESSAGE_PLACEHOLDER"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":2048}}
+          PAYLOAD_EOF
+
+          sed -i "s|MESSAGE_PLACEHOLDER|${MESSAGE}|g" /tmp/payload.json
+
+          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/payload.json)
+
+          echo "$RESPONSE" > "result_${REQUEST_ID}.json"
+
+          # Extract answer
+          ANSWER=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['candidates'][0]['content']['parts'][0]['text'])" 2>/dev/null || echo "ERROR")
+
+          echo "Gemini Response: $ANSWER"
+
+      - name: Commit result
+        run: |
+          git config user.name "Gemini Proxy Bot"
+          git config user.email "bot@example.com"
+          git add result_*.json || true
+          git commit -m "Add result for ${{ github.event.inputs.request_id }}" || true
+          git push
