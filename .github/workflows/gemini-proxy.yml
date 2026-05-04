@@ -15,6 +15,9 @@ on:
         description: 'Unique request ID'
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   call-gemini:
     runs-on: ubuntu-latest
@@ -32,23 +35,31 @@ jobs:
           echo "Calling Gemini API..."
           echo "Model: $MODEL"
 
-          # Save message to temp file to handle special characters
-          cat > /tmp/payload.json << 'PAYLOAD_EOF'
-          {"contents":[{"parts":[{"text":"MESSAGE_PLACEHOLDER"}]}],"generationConfig":{"temperature":0.7,"maxOutputTokens":2048}}
-          PAYLOAD_EOF
-
-          sed -i "s|MESSAGE_PLACEHOLDER|${MESSAGE}|g" /tmp/payload.json
-
-          RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d @/tmp/payload.json)
-
-          echo "$RESPONSE" > "result_${REQUEST_ID}.json"
-
-          # Extract answer
-          ANSWER=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['candidates'][0]['content']['parts'][0]['text'])" 2>/dev/null || echo "ERROR")
-
-          echo "Gemini Response: $ANSWER"
+          # Write payload to file to avoid shell escaping issues
+          python3 -c "
+          import json, urllib.request
+          msg = '''${MESSAGE}'''
+          payload = json.dumps({
+              'contents': [{'parts': [{'text': msg}]}],
+              'generationConfig': {'temperature': 0.7, 'maxOutputTokens': 2048}
+          }).encode()
+          url = 'https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=' + open('/dev/stdin').read().strip() if False else ''
+          req = urllib.request.Request(
+              'https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=' + __import__('os').environ['GEMINI_API_KEY'],
+              data=payload,
+              headers={'Content-Type': 'application/json'}
+          )
+          resp = urllib.request.urlopen(req)
+          data = json.loads(resp.read())
+          with open('result_${REQUEST_ID}.json', 'w') as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          try:
+              answer = data['candidates'][0]['content']['parts'][0]['text']
+              print('Gemini Response: ' + answer)
+          except:
+              print('ERROR: Could not parse response')
+              print(json.dumps(data)[:500])
+          "
 
       - name: Commit result
         run: |
