@@ -24,15 +24,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup script
+      - name: Call Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_MESSAGE: ${{ github.event.inputs.message }}
+          INPUT_MODEL: ${{ github.event.inputs.model }}
+          INPUT_REQUEST_ID: ${{ github.event.inputs.request_id }}
         run: |
-          cat > call_gemini.py << 'SCRIPT'
+          python3 << 'PYSCRIPT'
           import json, urllib.request, os, time, sys
 
-          message = os.environ.get('INPUT_MESSAGE', 'Hello')
-          model = os.environ.get('INPUT_MODEL', 'gemini-2.0-flash')
-          request_id = os.environ.get('INPUT_REQUEST_ID', 'default')
-          api_key = os.environ.get('GEMINI_API_KEY', '')
+          message = os.environ['INPUT_MESSAGE']
+          model = os.environ['INPUT_MODEL']
+          request_id = os.environ['INPUT_REQUEST_ID']
+          api_key = os.environ['GEMINI_API_KEY']
 
           print(f"Model: {model}")
           print(f"Message: {message[:80]}...")
@@ -43,46 +48,36 @@ jobs:
           }).encode()
 
           url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-          req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
 
-          # Retry up to 3 times for rate limits
-          for attempt in range(3):
+          for attempt in range(4):
               try:
-                  resp = urllib.request.urlopen(req, timeout=30)
+                  req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+                  resp = urllib.request.urlopen(req, timeout=60)
                   data = json.loads(resp.read())
                   
                   with open(f"result_{request_id}.json", "w") as f:
                       json.dump(data, f, ensure_ascii=False, indent=2)
                   
-                  try:
-                      answer = data["candidates"][0]["content"]["parts"][0]["text"]
-                      print(f"Gemini Response: {answer}")
-                  except (KeyError, IndexError):
-                      print(f"ERROR: Could not parse response")
-                      print(json.dumps(data, ensure_ascii=False)[:500])
+                  answer = data["candidates"][0]["content"]["parts"][0]["text"]
+                  print(f"Gemini Response: {answer}")
                   break
                   
               except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:300]
                   if e.code == 429:
-                      wait = 10 * (attempt + 1)
-                      print(f"Rate limited, waiting {wait}s... (attempt {attempt+1}/3)")
+                      wait = 30 * (attempt + 1)
+                      print(f"Rate limited (429), waiting {wait}s... (attempt {attempt+1}/4)")
                       time.sleep(wait)
                   else:
-                      body = e.read().decode()[:500]
                       print(f"HTTP Error {e.code}: {body}")
                       sys.exit(1)
+              except Exception as e:
+                  print(f"Error: {e}")
+                  sys.exit(1)
           else:
-              print("Failed after 3 retries")
+              print("Failed after 4 retries due to rate limiting")
               sys.exit(1)
-          SCRIPT
-
-      - name: Call Gemini API
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          INPUT_MESSAGE: ${{ github.event.inputs.message }}
-          INPUT_MODEL: ${{ github.event.inputs.model }}
-          INPUT_REQUEST_ID: ${{ github.event.inputs.request_id }}
-        run: python3 call_gemini.py
+          PYSCRIPT
 
       - name: Commit result
         run: |
